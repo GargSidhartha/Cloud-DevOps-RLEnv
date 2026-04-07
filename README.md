@@ -1,13 +1,12 @@
 ---
-title: Cloud DevOps RLEnv
-emoji: 🌖
-colorFrom: yellow
+title: Cloud-DevOps-RLEnv
+emoji: ☁️
+colorFrom: blue
 colorTo: gray
 sdk: docker
 app_port: 8000
-pinned: false
-license: mit
-short_description: Cloud SRE/DevOps RL environment
+tags:
+- openenv
 ---
 
 # Cloud DevOps RLEnv
