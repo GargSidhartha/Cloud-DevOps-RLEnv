@@ -6,6 +6,7 @@ WORKDIR /app
 
 # Copy project files
 COPY pyproject.toml .
+COPY README.md .
 COPY openenv.yaml .
 COPY models.py .
 COPY env.py .
