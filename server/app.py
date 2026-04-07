@@ -34,9 +34,11 @@ from pathlib import Path
 # Default to enabling the OpenEnv web interface for local development.
 # You can still disable it explicitly: ENABLE_WEB_INTERFACE=false
 os.environ.setdefault("ENABLE_WEB_INTERFACE", "true")
+_BASE_DIR = Path(__file__).resolve().parent.parent
+_WEB_README = _BASE_DIR / "WEB_README.md"
 os.environ.setdefault(
     "ENV_README_PATH",
-    str((Path(__file__).resolve().parent.parent / "README.md")),
+    str(_WEB_README if _WEB_README.exists() else (_BASE_DIR / "README.md")),
 )
 
 try:
