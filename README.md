@@ -108,6 +108,13 @@ Representative deterministic scripted-policy targets:
 | medium | 0.8-1.0 | Depends on whether optional diagnostic reward is collected |
 | hard | 1.0 | Requires correct root-cause path before restart |
 
+Model baseline comparison (LLM policy runs):
+
+| Model | Easy | Medium | Notes |
+| --- | --- | --- | --- |
+| gemma-3-27b-it | 0.2 | 0.2 | Did not perform strongly enough for this environment |
+| gemma-4-31b-it | 1.0 | 1.0 | Achieved perfect scores on both easy and medium |
+
 Validation expectation:
 - Aggregate scores are clamped to `[0.0, 1.0]`.
 - `SUCCESS_SCORE_THRESHOLD` for inference summaries is `0.8`.
