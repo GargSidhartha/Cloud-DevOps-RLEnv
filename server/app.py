@@ -36,9 +36,9 @@ from pathlib import Path
 os.environ.setdefault("ENABLE_WEB_INTERFACE", "true")
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _WEB_README = _BASE_DIR / "WEB_README.md"
-os.environ.setdefault(
-    "ENV_README_PATH",
-    str(_WEB_README if _WEB_README.exists() else (_BASE_DIR / "README.md")),
+# Force a clean renderer source file for /web; fallback only if missing.
+os.environ["ENV_README_PATH"] = str(
+    _WEB_README if _WEB_README.exists() else (_BASE_DIR / "README.md")
 )
 
 try:

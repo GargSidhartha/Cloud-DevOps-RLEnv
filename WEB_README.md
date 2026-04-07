@@ -1,107 +1,70 @@
 # Cloud DevOps RLEnv
 
-Cloud DevOps RLEnv is an OpenEnv-compatible environment for training and evaluating agents on realistic cloud SRE and DevOps incident-response tasks.
+This environment trains and tests agents on cloud incident response.
 
-## Environment Description And Motivation
+## What You Need To Do
 
-Production incidents are often multi-step: triage, inspect resources, check logs, apply a safe remediation, and then verify the fix. This environment simulates that loop with deterministic scenarios and shaped rewards.
+Solve incidents by following the same workflow a real SRE would use:
+1. Inspect resources.
+2. Read logs.
+3. Apply a safe fix.
+4. Submit the solution.
 
-Goals:
-- Benchmark planning and tool-use behavior for cloud operations agents.
-- Reward correct diagnosis over blind action execution.
-- Provide repeatable task outcomes for fair grading and comparison.
+## Available Actions
 
-## Action Space
+- `list_resources`: See all resources.
+- `describe_resource`: View one resource.
+- `view_logs`: Read logs for one resource.
+- `update_security_group`: Add/modify security rules.
+- `restart_service`: Restart an instance.
+- `submit_solution`: Submit your final answer.
 
-Action model: CloudAction
+## What You Receive Each Step
 
-Fields:
-- command (required): one of list_resources, describe_resource, view_logs, update_security_group, restart_service, submit_solution.
-- resource_id (optional): target resource identifier (required for most non-list actions).
-- parameters (optional): structured key/value arguments used by mutating actions.
+- `output`: Main command result.
+- `error`: Error text if a command fails.
+- `system_health_status`: `CRITICAL`, `DEGRADED`, or `HEALTHY`.
+- `reward`: Step reward.
+- `done`: Whether the episode has ended.
 
-Notes:
-- update_security_group expects parameters.port and usually parameters.action.
-- restart_service targets a single instance by resource_id.
+## Difficulty Levels
 
-## Observation And State Space
+- `easy`: Open port `80` on `sg-web`.
+- `medium`: Find DB timeout in logs, then open port `5432` on `sg-db`.
+- `hard`: Trace timeout through load balancer to `i-web2`, then restart the correct service.
 
-Observation model: CloudObservation
+## Quick Start
 
-Primary observation fields:
-- output: command result payload.
-- error: command error, when present.
-- system_health_status: CRITICAL, DEGRADED, or HEALTHY.
-- done: terminal flag.
-- reward: scalar step reward.
-- metadata: includes task name, resolution status, step count, and other diagnostics.
+Run from repo root:
 
-Hidden state model: CloudState
-- task_difficulty: easy, medium, or hard.
-- resources: underlying resource graph and logs.
-- step_count: total actions issued.
-- is_resolved: whether incident root cause is remediated.
+```bash
+..\\.venv\\Scripts\\openenv validate
+bash scripts/pre_submit_validate.sh --skip-inference
+docker build -t cloud-devops-env:phase1 -f Dockerfile .
+```
 
-## Task Definitions And Expected Difficulty
+Run server locally:
 
-- easy:
-  Open port 80 on sg-web so web traffic can flow.
-  Expected difficulty: low.
-- medium:
-  Inspect API logs to identify DB connectivity failure, then open port 5432 on sg-db.
-  Expected difficulty: medium (requires diagnosis before remediation).
-- hard:
-  Trace load balancer timeout to i-web2, inspect the target, then restart the correct service.
-  Expected difficulty: high (multi-hop diagnosis and anti-shortcut checks).
-
-## Setup And Usage
-
-From repository root:
-
-- Validate OpenEnv package structure and manifest:
-  ..\\.venv\\Scripts\\openenv validate
-- Run pre-submission validator (skip live inference):
-  bash scripts/pre_submit_validate.sh --skip-inference
-- Build local submission image:
-  docker build -t cloud-devops-env:phase1 -f Dockerfile .
-
-Optional local server run:
-
+```bash
 uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
 
-## Inference Contract
+## Inference Requirements
 
-inference.py uses the OpenAI client and reads:
-- API_BASE_URL
-- MODEL_NAME
-- HF_TOKEN
+`inference.py` reads:
+- `API_BASE_URL`
+- `MODEL_NAME`
+- `HF_TOKEN`
 
-It emits strict structured logs:
-- [START] { ... } per task
-- [STEP] { ... } per environment action
-- [END] { ... } per task summary
+It logs strict markers:
+- `[START]`
+- `[STEP]`
+- `[END]`
 
-## Baseline Scores
+## Baseline Score Targets
 
-Representative deterministic scripted-policy targets:
+- easy: `1.0`
+- medium: `0.8` to `1.0`
+- hard: `1.0`
 
-- easy: 1.0
-- medium: 0.8-1.0
-- hard: 1.0
-
-Validation expectation:
-- Aggregate scores are clamped to [0.0, 1.0].
-- SUCCESS_SCORE_THRESHOLD for inference summaries is 0.8.
-
-## Hugging Face Space Deployment
-
-1. Push this repository to your Space (Docker SDK).
-2. Keep README.md front matter for Space metadata.
-3. Set Space secrets/variables:
-   - HF_TOKEN (secret)
-   - API_BASE_URL (for example https://router.huggingface.co/v1)
-   - MODEL_NAME (chosen model slug)
-4. Wait for Space build to complete.
-5. Verify endpoints:
-   - GET /health returns 200
-   - POST /reset returns 200
+Scores are clamped to `[0.0, 1.0]`.

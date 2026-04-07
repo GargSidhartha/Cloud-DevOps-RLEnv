@@ -4,6 +4,10 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
+# Install dependencies first to maximize Docker cache reuse across code edits
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
 # Copy project files
 COPY pyproject.toml .
 COPY README.md .
@@ -15,8 +19,8 @@ COPY __init__.py .
 COPY client.py .
 COPY server ./server
 
-# Install dependencies (no-cache to save space)
-RUN pip install --no-cache-dir .
+# Install local package metadata/entrypoints without reinstalling dependencies
+RUN pip install --no-deps .
 
 # Expose the standard OpenEnv port
 EXPOSE 8000
