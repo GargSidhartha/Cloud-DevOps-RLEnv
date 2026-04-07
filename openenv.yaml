@@ -1,0 +1,19 @@
+spec_version: 1
+name: cloud_devops_env
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+
+metadata:
+  project: cloud-devops-env
+  description: A real-world Cloud SRE/DevOps simulation environment.
+  entrypoint:
+    file: env.py
+    class: CloudDevOpsEnv
+  models:
+    file: models.py
+    action: CloudAction
+    observation: CloudObservation
+    state: CloudState
+
