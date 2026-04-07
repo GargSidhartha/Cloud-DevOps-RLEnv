@@ -10,8 +10,8 @@ RUN pip install -r requirements.txt
 
 # Copy project files
 COPY pyproject.toml .
-COPY README.md .
-COPY WEB_README.md .
+# OpenEnv /web reads /app/README.md first, so map web docs there explicitly.
+COPY WEB_README.md ./README.md
 COPY openenv.yaml .
 COPY models.py .
 COPY env.py .
