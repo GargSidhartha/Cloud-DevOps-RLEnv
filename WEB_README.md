@@ -1,70 +1,124 @@
 # Cloud DevOps RLEnv
 
-This environment trains and tests agents on cloud incident response.
+Use this page as your in-app playbook while interacting with the environment.
 
-## What You Need To Do
+## Mission
 
-Solve incidents by following the same workflow a real SRE would use:
-1. Inspect resources.
-2. Read logs.
-3. Apply a safe fix.
-4. Submit the solution.
+You are an incident responder in a simulated cloud production system.
 
-## Available Actions
+Your goal is to:
+1. Investigate symptoms quickly.
+2. Identify root cause.
+3. Apply the correct remediation.
+4. Confirm resolution with minimal unsafe actions.
 
-- `list_resources`: See all resources.
-- `describe_resource`: View one resource.
-- `view_logs`: Read logs for one resource.
-- `update_security_group`: Add/modify security rules.
-- `restart_service`: Restart an instance.
-- `submit_solution`: Submit your final answer.
+## Command Cheat Sheet
 
-## What You Receive Each Step
+- `list_resources`
+	- Use first in almost every run.
+	- Helps separate real targets from decoy resources.
 
-- `output`: Main command result.
-- `error`: Error text if a command fails.
-- `system_health_status`: `CRITICAL`, `DEGRADED`, or `HEALTHY`.
-- `reward`: Step reward.
-- `done`: Whether the episode has ended.
+- `describe_resource(resource_id)`
+	- Use for configuration/state inspection.
+	- Helpful before mutating operations.
 
-## Difficulty Levels
+- `view_logs(resource_id)`
+	- Primary root-cause signal for medium/hard tasks.
+	- Often required for best reward path.
 
-- `easy`: Open port `80` on `sg-web`.
-- `medium`: Find DB timeout in logs, then open port `5432` on `sg-db`.
-- `hard`: Trace timeout through load balancer to `i-web2`, then restart the correct service.
+- `update_security_group(resource_id, parameters)`
+	- Requires `parameters.port`.
+	- Typical payload: `{ "port": 80, "action": "allow" }`.
 
-## Quick Start
+- `restart_service(resource_id)`
+	- Use only after diagnosis on hard task.
+	- Restarting the wrong host is penalized.
 
-Run from repo root:
+- `submit_solution`
+	- Ends easy/medium if solved.
+	- In hard task, unresolved submit may continue with penalty.
 
-```bash
-..\\.venv\\Scripts\\openenv validate
-bash scripts/pre_submit_validate.sh --skip-inference
-docker build -t cloud-devops-env:phase1 -f Dockerfile .
-```
+## Rewards And Guardrails
 
-Run server locally:
+- Positive rewards are given for meaningful diagnosis + correct fixes.
+- Penalties are applied for premature or unsafe actions.
+- Step reward is clipped to `[-1.0, 1.0]`.
+- Episode ends on success or timeout (`MAX_STEPS = 20`).
 
-```bash
-uvicorn server.app:app --host 0.0.0.0 --port 8000
-```
+## Task Playbooks
 
-## Inference Requirements
+### Easy (Web Access Issue)
 
-`inference.py` reads:
-- `API_BASE_URL`
-- `MODEL_NAME`
-- `HF_TOKEN`
+Objective:
+- Open port `80` on `sg-web`.
 
-It logs strict markers:
-- `[START]`
-- `[STEP]`
-- `[END]`
+Recommended path:
+1. `list_resources`
+2. `describe_resource("sg-web")`
+3. `update_security_group("sg-web", {"port": 80, "action": "allow"})`
 
-## Baseline Score Targets
+Notes:
+- Includes one optional investigation reward step.
 
+### Medium (API to DB Connectivity)
+
+Objective:
+- Confirm DB timeout from logs, then open port `5432` on `sg-db`.
+
+Recommended path:
+1. `list_resources`
+2. `view_logs("i-api")`
+3. `describe_resource("sg-db")` (optional but useful)
+4. `update_security_group("sg-db", {"port": 5432, "action": "allow"})`
+
+Important:
+- Updating SG before checking `i-api` logs can incur penalty and may not resolve.
+
+### Hard (Upstream Timeout / Wrong Host Risk)
+
+Objective:
+- Trace LB errors to `i-web2`, inspect target, then restart `i-web2`.
+
+Recommended path:
+1. `list_resources`
+2. `view_logs("lb-main")`
+3. `describe_resource("i-web2")` or `view_logs("i-web2")`
+4. `restart_service("i-web2")`
+
+Important:
+- Restarting `i-web1` is penalized.
+- Restarting `i-web2` before investigation is also penalized.
+
+## Response Fields You Should Watch
+
+- `output`: command result text
+- `error`: failure reason, if any
+- `system_health_status`: CRITICAL / DEGRADED / HEALTHY
+- `reward`: current step reward
+- `done`: whether episode ended
+- `metadata`: task, step_count, resolved, achievements
+
+## Baseline Targets
+
+Deterministic scripted policy targets:
 - easy: `1.0`
 - medium: `0.8` to `1.0`
 - hard: `1.0`
 
-Scores are clamped to `[0.0, 1.0]`.
+LLM comparison:
+- gemma-3-27b-it: easy `0.2`, medium `0.2`
+- gemma-4-31b-it: easy `1.0`, medium `1.0`
+
+## Inference Contract (for submission)
+
+`inference.py` must:
+- use OpenAI client
+- read `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN`
+- emit strict markers: `[START]`, `[STEP]`, `[END]`
+
+## Practical Strategy
+
+- Do not mutate first; inspect first.
+- Use logs to justify each remediation.
+- Prefer minimal, targeted changes.
+- Avoid restart actions unless root cause points there.
