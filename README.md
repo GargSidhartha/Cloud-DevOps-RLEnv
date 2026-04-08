@@ -15,6 +15,37 @@ Cloud DevOps RLEnv is an OpenEnv-compatible cloud incident-response benchmark de
 
 This environment rewards correct diagnosis and safe remediation, not blind action execution. It is deterministic, reproducible, and optimized for hackathon evaluation.
 
+## Overview
+
+Cloud DevOps RLEnv is a **reinforcement-learning benchmark environment** that simulates realistic cloud infrastructure incidents for AI agents to solve.
+
+**What it does:**
+
+An AI agent (or human operator via the web UI) is placed inside a mock cloud environment containing compute instances, load balancers, and security groups. The environment starts in a broken state — a port is blocked, a service is misconfigured, or a dependency has failed — and the agent must:
+
+1. **Investigate** — call read-only commands (`list_resources`, `describe_resource`, `view_logs`, `query_metadata`) to gather telemetry and map the topology.
+2. **Diagnose** — identify the root cause from noisy logs and multi-hop metadata clues (e.g., resolve a raw IP address to a resource ID).
+3. **Remediate** — apply the minimal correct fix (`update_security_group` or `restart_service`) and confirm resolution.
+4. **Submit** — optionally call `submit_solution` to explicitly close the episode.
+
+Each action costs a small reward penalty (`-0.01`), so efficient, targeted trajectories outscore brute-force exploration. The episode ends when the incident is resolved, `submit_solution` is called, or the 20-step limit is reached.
+
+**Three difficulty tiers:**
+
+| Tier | Incident | Key challenge |
+| --- | --- | --- |
+| Easy | Port 80 blocked on `sg-web` | Single-hop: list → fix |
+| Medium | API can't reach DB (port 5432 blocked) | Must read logs and resolve metadata before the SG fix counts |
+| Hard | Checkout flow degraded due to upstream timeout at `i-web2` | Multi-hop IP resolution, cascading failure after step 8, wrong-target penalties |
+
+**How it is built:**
+
+- The server (`server/app.py`, `server/cloud_devops_env_environment.py`) exposes a FastAPI REST + WebSocket API following the OpenEnv spec.
+- Data models (`models.py`) define the typed `CloudAction`, `CloudObservation`, and `CloudState` contracts.
+- The async facade (`env.py`) wraps the server-side logic for use by external evaluators and custom graders.
+- The inference loop (`inference.py`) drives an LLM policy through the environment, emitting structured `[START]` / `[STEP]` / `[END]` log lines for automated scoring.
+- A web UI (`GET /web`) lets human operators play through tasks interactively.
+
 ## Judge-Aligned Snapshot
 
 | Parameter | Weight | How this environment addresses it |
