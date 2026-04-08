@@ -11,41 +11,122 @@ tags:
 
 # Cloud DevOps RLEnv
 
-Cloud DevOps RLEnv is an OpenEnv-compatible cloud incident-response benchmark designed for agentic SRE and DevOps workflows.
+Cloud DevOps RLEnv is an OpenEnv benchmark for real incident-response workflows in cloud production systems.
 
-This environment rewards correct diagnosis and safe remediation, not blind action execution. It is deterministic, reproducible, and optimized for hackathon evaluation.
+It is designed to evaluate whether an agent can triage noisy telemetry, identify root cause, apply a safe fix, and do all of this efficiently under cost and pressure.
 
-## Why This Environment
+## Judge-Aligned Snapshot
 
-Real incidents are multi-step and noisy. Good agents must:
-- gather context before changing systems
-- identify root cause from logs and topology
-- apply minimal, correct fixes
-- verify resolution
+This section maps the environment directly to the scoring rubric.
 
-Cloud DevOps RLEnv simulates that behavior with realistic failure patterns, decoy resources, shaped rewards, and anti-shortcut guardrails.
+| Parameter | Weight | How this environment addresses it |
+| --- | --- | --- |
+| Real-world utility | 30% | Simulates practical SRE outage response loops: triage logs, map failing dependency, remediate safely, verify health. |
+| Task and grader quality | 25% | Three deterministic tasks (easy/medium/hard), explicit objectives, reproducible reward logic, strict success/failure gates. |
+| Environment design | 20% | Typed actions and observations, deterministic reset, shaped rewards, action cost, clear episode boundaries and timeout. |
+| Code quality and spec compliance | 15% | OpenEnv-compatible layout, typed models, Dockerized runtime, strict inference logging contract, local validators included. |
+| Creativity and novelty | 10% | Multi-hop metadata dependency, cascading failure drift, high-decoy infrastructure search, efficiency-aware reward shaping. |
 
-## Why It's Hard
+## Real-World Utility
 
-This benchmark is intentionally designed to resist brute-force policies and reward disciplined SRE reasoning:
+The benchmark models incidents that closely mirror day-2 operations in production:
 
-- Needle-in-a-haystack discovery: 20+ decoy compute nodes and 20+ decoy security groups increase search complexity.
-- Ambiguous telemetry: noisy, raw operational logs surface symptoms (including IP-only clues) rather than direct root-cause labels.
-- Action-penalty heuristics: every action has a small negative cost, so efficient remediation beats command spamming.
-- Multi-hop dependency resolution: agents must map IP addresses to resource IDs via metadata lookup before applying fixes.
-- System drift under pressure: in hard mode, delayed remediation triggers cascading failures that worsen observability and reward dynamics.
+- Security group misconfiguration blocks service traffic.
+- Service-to-database communication fails with telemetry-first diagnosis required.
+- Load balancer upstream failures require dependency mapping and targeted restart under time pressure.
 
-## Environment Scope
+This is not a toy command simulator. The hard task requires reasoning over partial evidence and acting safely under drift.
 
-- Domain: Cloud SRE / DevOps incident response
-- Difficulty tiers: easy, medium, hard
-- Max environment steps per episode: 20
-- Runtime health states: CRITICAL, DEGRADED, HEALTHY
-- Decoy resources: 20 backend instances + 20 backend security groups
+## Why It Is Hard
 
-## OpenEnv Compliance
+- Needle-in-a-haystack discovery: 20+ decoy instances and 20+ decoy security groups.
+- Ambiguous telemetry: logs expose symptoms and IPs, not always direct resource names.
+- Action-cost pressure: every action incurs a negative reward, penalizing brute-force behavior.
+- Multi-hop dependency: agent must use metadata resolution before remediation in medium/hard.
+- Cascading failures: unresolved hard incidents degrade additional components after step 8.
 
-Core files:
+## Task Suite And Difficulty Progression
+
+| Task | Objective | Required reasoning depth | Typical strong trajectory |
+| --- | --- | --- | --- |
+| easy | Restore web access by opening port 80 on sg-web | Single-hop config diagnosis | list_resources -> update_security_group(sg-web, allow 80) |
+| medium | Restore DB connectivity by opening port 5432 on sg-db | Multi-hop: logs -> IP -> metadata lookup -> fix | list_resources -> view_logs(i-api) -> query_metadata(10.0.4.5) -> update_security_group(sg-db, allow 5432) |
+| hard | Recover checkout path by fixing failing upstream i-web2 | Multi-hop + pressure: logs -> IP -> metadata -> inspect -> restart | list_resources -> view_logs(lb-main) -> query_metadata(10.0.8.22) -> describe/view i-web2 -> restart_service(i-web2) |
+
+## Grader Quality And Determinism
+
+- Deterministic state: no RNG in task initialization.
+- Deterministic transitions: action handling is rule-based and reproducible.
+- Deterministic rewards: shaped by explicit achievement checkpoints and safety penalties.
+- Deterministic success: inferred from resolved incident state, not ad hoc heuristics.
+
+Score behavior:
+
+- Step reward is clipped to [-1.0, 1.0].
+- Per-task inference score is clamped to strict open interval (0, 1) for validator compatibility.
+- Lower-step successful solutions naturally score higher due to per-step action cost.
+
+## Environment Design Details
+
+- Runtime health states: CRITICAL, DEGRADED, HEALTHY.
+- Episode limit: 20 environment steps.
+- Hard-task drift: if unresolved after step 8, lb-external is marked DOWN.
+- Action cost: -0.01 on every step to encourage efficient plans.
+
+### Action Space (CloudAction)
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| command | enum | yes | list_resources, describe_resource, view_logs, query_metadata, update_security_group, restart_service, submit_solution |
+| resource_id | string | conditional | Required for most commands except list_resources and query_metadata |
+| parameters | object | conditional | Required for query_metadata.ip_address and update_security_group.port/action |
+
+Security-group mutation semantics:
+
+- update_security_group requires both port and action.
+- action must be allow or deny.
+- Invalid actions are rejected and do not mutate state.
+
+### Observation and State Models
+
+Observation (CloudObservation): output, error, system_health_status, reward, done, metadata.
+
+State (CloudState): task_difficulty, resources, step_count, is_resolved.
+
+## Inference Contract And Compliance
+
+Mandatory environment variables:
+
+- API_BASE_URL
+- MODEL_NAME
+- HF_TOKEN
+
+Mandatory inference requirements:
+
+- inference.py is at repository root.
+- Uses OpenAI client for all LLM calls.
+- Emits strict stdout contract only:
+
+```text
+[START] task=<task_name> env=<benchmark> model=<model_name>
+[STEP] step=<n> action=<action_json_or_str> reward=<0.00> done=<true|false> error=<msg|null>
+[END] success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
+```
+
+## Reference Baseline Behavior
+
+Recent deterministic policy-style run with current environment dynamics:
+
+| Task | Steps | Score | Outcome |
+| --- | --- | --- | --- |
+| easy | 2 | 0.780 | success=true |
+| medium | 4 | 0.960 | success=true |
+| hard | 5 | 0.999 | success=true |
+
+## Project Layout And Spec Files
+
+Required OpenEnv files are present:
+
 - openenv.yaml
 - env.py
 - models.py
@@ -53,208 +134,35 @@ Core files:
 - server/app.py
 - server/cloud_devops_env_environment.py
 
-Validator command:
-
-```bash
-..\\.venv\\Scripts\\openenv validate
-```
-
-## Action Space
-
-Model: CloudAction
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| command | enum | yes | One of: list_resources, describe_resource, view_logs, query_metadata, update_security_group, restart_service, submit_solution |
-| resource_id | string | conditional | Required for most actions except list_resources |
-| parameters | object | conditional | Used by mutating actions (for example, security-group updates) |
-
-Action semantics:
-- list_resources: Enumerates available resources including decoys.
-- describe_resource: Returns structured details for one resource.
-- view_logs: Returns logs for one resource.
-- query_metadata: Resolves infrastructure metadata (for example, IP address to resource ID).
-- update_security_group: Appends a rule (requires parameters.port and parameters.action where action is allow/deny).
-- restart_service: Restarts one instance/service by ID.
-- submit_solution: Declares the episode solved (or not solved).
-
-## Observation And State Space
-
-Observation model: CloudObservation
-
-| Field | Description |
-| --- | --- |
-| output | Main command output |
-| error | Error string for failed commands |
-| system_health_status | CRITICAL, DEGRADED, HEALTHY |
-| done | Episode terminal flag |
-| reward | Step reward |
-| metadata | Diagnostics such as task, step_count, resolved, achievements |
-
-Hidden state model: CloudState
-
-| Field | Description |
-| --- | --- |
-| task_difficulty | easy, medium, hard |
-| resources | Full resource graph including logs/rules |
-| step_count | Current step counter |
-| is_resolved | Whether root cause has been fixed |
-
-## Reward Design
-
-Reward shaping is sparse-but-guided:
-- discovery rewards for correct investigative steps
-- larger terminal rewards for correct remediation
-- penalties for unsafe or premature operations
-- fixed action cost per step (efficiency pressure)
-- timeout terminal condition after max steps
-
-Per-step reward is clipped to [-1.0, 1.0].
-Inference task score is adjusted to remain strictly within (0.0, 1.0) for Phase-2 validator compatibility.
-
-## Detailed Task Playbooks
-
-### Easy Task
-
-Incident:
-- Web traffic blocked by security group.
-
-Objective:
-- Open port 80 on sg-web.
-
-Typical successful sequence:
-1. list_resources
-2. describe_resource(sg-web) for context (+0.2)
-3. update_security_group(sg-web, port=80, action=allow) (+0.8, done)
-
-Expected score:
-- ~0.97 for full playbook with efficient triage
-- ~0.79 if agent skips the optional read step
-
-### Medium Task
-
-Incident:
-- API cannot reach DB due to blocked port 5432.
-
-Objective:
-- Confirm root cause from logs, then open port 5432 on sg-db.
-
-Typical successful sequence:
-1. list_resources
-2. view_logs(i-api) to identify DB timeout (+0.2)
-3. describe_resource(sg-db) optional context (+0.2)
-4. update_security_group(sg-db, port=5432, action=allow) (+0.6, done if logs were inspected)
-
-Guardrail:
-- Applying the SG change before log triage + metadata lookup gives a penalty (-0.1) and does not close the incident.
-
-Expected score:
-- ~0.97 with full investigative path (logs -> metadata lookup -> remediation)
-- below ~0.90 when metadata dependency is skipped
-
-### Hard Task
-
-Incident:
-- Checkout path degraded due to upstream timeout to an IP-only target that must be resolved first.
-
-Objective:
-- Trace LB errors to the correct target, resolve resource identity via metadata, and restart i-web2 only after diagnosis.
-
-Typical successful sequence:
-1. list_resources
-2. view_logs(lb-main) to identify failing upstream IP (+0.2)
-3. query_metadata(ip_address=<failing_ip>) to resolve target ID (+0.2)
-4. describe_resource(i-web2) or view_logs(i-web2) (+0.2)
-5. restart_service(i-web2) (+0.8, done when all investigation achievements exist)
-
-Guardrails:
-- Restarting i-web2 before investigation: penalty (-0.1), no resolution.
-- Restarting healthy i-web1: penalty (-0.2).
-- Premature submit_solution in hard mode: penalty (-0.1), episode continues.
-- If unresolved after step 8 in hard mode, lb-external also fails (cascading failure), increasing pressure and noise.
-
-Expected score:
-- near 1.0 after score clamping for strong trajectories (can exceed 1.0 raw before clamp)
-
-## API Endpoints
-
-Core runtime:
-- GET /health
-- POST /reset
-- POST /step
-- GET /state
-- GET /schema
-- WS /ws
-
-Web UI runtime:
-- GET /web
-- POST /web/reset
-- POST /web/step
-- GET /web/state
-- GET /web/metadata
-
-## Inference Contract
-
-inference.py requirements:
-- uses OpenAI client
-- reads API_BASE_URL, MODEL_NAME, HF_TOKEN
-- emits strict logs: [START], [STEP], [END]
-
-Current defaults in code:
-- MODEL_NAME default: google/gemma-4-31B-it
-- MAX_STEPS (in inference loop): 15
-- SUCCESS_SCORE_THRESHOLD: 0.8
-
-## Baselines
-
-### Deterministic task baselines
-
-| Task | Typical baseline score |
-| --- | --- |
-| easy | 1.0 |
-| medium | 0.8 to 1.0 |
-| hard | 1.0 (after clamp) |
-
-### LLM policy comparison
-
-| Model | Easy | Medium | Summary |
-| --- | --- | --- | --- |
-| gemma-3-27b-it | 0.2 | 0.2 | Underperformed on this environment |
-| gemma-4-31b-it | 1.0 | 1.0 | Perfect on both easy and medium |
-
-## Local Setup And Validation
+## Validation And Reproducibility
 
 From repository root:
 
 ```bash
-# Structure + manifest validation
+# OpenEnv manifest and schema checks
 ..\\.venv\\Scripts\\openenv validate
 
-# Submission-oriented local checks (without live inference)
-bash scripts/pre_submit_validate.sh --skip-inference
+# Full submission checks including inference contract
+bash scripts/pre_submit_validate.sh --ping-url https://<your-space>.hf.space
 
-# Build local image
-docker build -t cloud-devops-env:phase1 -f Dockerfile .
+# Official 3-step baseline validator
+bash scripts/validate-submission.sh https://<your-space>.hf.space .
+
+# Docker smoke test
+docker build -t cloud-devops-env:latest -f Dockerfile .
+docker run --rm -p 8000:8000 cloud-devops-env:latest
 ```
 
-Optional local server:
+## Hugging Face Space Deployment Checklist
 
-```bash
-uvicorn server.app:app --host 0.0.0.0 --port 8000
-```
-
-## Hugging Face Space Deployment
-
-1. Keep this front matter block intact (includes mandatory openenv tag).
-2. Push to Space (Docker SDK).
-3. Configure secrets/variables:
-   - HF_TOKEN
-   - API_BASE_URL (for example https://router.huggingface.co/v1)
-   - MODEL_NAME
-4. Wait for build completion.
-5. Verify:
-   - GET /health returns 200
-   - POST /reset returns 200
+1. Keep front matter intact, including openenv tag and app_port 8000.
+2. Push latest main branch to the Space repository.
+3. Configure API_BASE_URL, MODEL_NAME, HF_TOKEN in Space settings.
+4. Wait for build completion and verify endpoints:
+   - GET /health -> 200
+   - POST /reset -> 200
+5. Run inference.py once in Space logs to confirm strict START/STEP/END output.
 
 Reference:
+
 - https://huggingface.co/docs/hub/spaces-config-reference
