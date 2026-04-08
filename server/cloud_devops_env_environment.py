@@ -217,6 +217,20 @@ class CloudDevopsEnvironment(Environment):
         self._achievements.add(achievement)
         return points
 
+    def _task_objective(self) -> str:
+        objectives = {
+            "easy": "Restore web access by allowing port 80 on sg-web.",
+            "medium": (
+                "Restore API to DB connectivity by reading i-api logs, resolving DB IP via "
+                "query_metadata, then allowing port 5432 on sg-db."
+            ),
+            "hard": (
+                "Recover checkout path by tracing lb-main upstream IP, resolving it with "
+                "query_metadata, inspecting i-web2, and restarting i-web2 safely."
+            ),
+        }
+        return objectives[self.task_name]
+
     def reset(self) -> CloudObservation:  # type: ignore[override]
         """Reset the environment to the initial state for the selected task."""
         self._achievements.clear()
@@ -242,6 +256,11 @@ class CloudDevopsEnvironment(Environment):
                 "resolved": False,
                 "task": self.task_name,
                 "total_resources": len(self._state_data.resources),
+                "objective": self._task_objective(),
+                "deterministic": True,
+                "max_steps": self.MAX_STEPS,
+                "action_cost": self.ACTION_COST,
+                "hard_cascade_trigger_step": 8,
             },
             echoed_message="Cloud Devops Env environment ready!",
             message_length=0,
@@ -257,9 +276,20 @@ class CloudDevopsEnvironment(Environment):
 
         state.step_count += 1
         reward = -self.ACTION_COST
+        reward_breakdown: list[dict[str, object]] = [
+            {"event": "action_cost", "delta": -self.ACTION_COST}
+        ]
         done = False
         output = ""
         error = None
+        termination_reason = "in_progress"
+
+        def add_reward(delta: float, event: str) -> None:
+            nonlocal reward
+            if abs(delta) < 1e-12:
+                return
+            reward += delta
+            reward_breakdown.append({"event": event, "delta": round(float(delta), 4)})
 
         try:
             if action.command == "list_resources":
@@ -276,11 +306,14 @@ class CloudDevopsEnvironment(Environment):
                 output = str(state.resources[action.resource_id])
 
                 if self.task_name == "easy" and action.resource_id == "sg-web":
-                    reward += self._reward_once("read_sg", 0.2)
+                    add_reward(self._reward_once("read_sg", 0.2), "inspect_web_sg")
                 elif self.task_name == "medium" and action.resource_id == "sg-db":
-                    reward += self._reward_once("read_sg", 0.2)
+                    add_reward(self._reward_once("read_sg", 0.2), "inspect_db_sg")
                 elif self.task_name == "hard" and action.resource_id == "i-web2":
-                    reward += self._reward_once("inspect_target", 0.2)
+                    add_reward(
+                        self._reward_once("inspect_target", 0.2),
+                        "inspect_target_instance",
+                    )
 
             elif action.command == "view_logs":
                 if not action.resource_id:
@@ -293,11 +326,14 @@ class CloudDevopsEnvironment(Environment):
                 output = str(res.get("logs", "No logs available for this resource."))
 
                 if self.task_name == "medium" and action.resource_id == "i-api":
-                    reward += self._reward_once("read_logs", 0.2)
+                    add_reward(self._reward_once("read_logs", 0.2), "inspect_api_logs")
                 elif self.task_name == "hard" and action.resource_id == "lb-main":
-                    reward += self._reward_once("inspect_lb", 0.2)
+                    add_reward(self._reward_once("inspect_lb", 0.2), "inspect_lb_logs")
                 elif self.task_name == "hard" and action.resource_id == "i-web2":
-                    reward += self._reward_once("inspect_target", 0.2)
+                    add_reward(
+                        self._reward_once("inspect_target", 0.2),
+                        "inspect_target_logs",
+                    )
 
             elif action.command == "query_metadata":
                 ip_address = None
@@ -314,9 +350,15 @@ class CloudDevopsEnvironment(Environment):
 
                 output = f"Metadata lookup: ip_address={ip_address} resource_id={resource_id}"
                 if self.task_name == "medium" and str(ip_address) == "10.0.4.5":
-                    reward += self._reward_once("lookup_db_target", 0.2)
+                    add_reward(
+                        self._reward_once("lookup_db_target", 0.2),
+                        "resolve_db_ip_dependency",
+                    )
                 elif self.task_name == "hard" and str(ip_address) == "10.0.8.22":
-                    reward += self._reward_once("lookup_upstream_target", 0.2)
+                    add_reward(
+                        self._reward_once("lookup_upstream_target", 0.2),
+                        "resolve_upstream_ip_dependency",
+                    )
 
             elif action.command == "update_security_group":
                 if not action.resource_id:
@@ -350,8 +392,9 @@ class CloudDevopsEnvironment(Environment):
                     and rule_action == "allow"
                 ):
                     state.is_resolved = True
-                    reward += 0.8
+                    add_reward(0.8, "resolve_easy_web_ingress")
                     done = True
+                    termination_reason = "resolved_easy"
                     output += "\nSUCCESS: Web server is now accessible!"
                 elif (
                     self.task_name == "medium"
@@ -365,17 +408,18 @@ class CloudDevopsEnvironment(Environment):
                     )
                     if investigated:
                         state.is_resolved = True
-                        reward += 0.6
+                        add_reward(0.6, "resolve_medium_db_connectivity")
                         done = True
+                        termination_reason = "resolved_medium"
                         output += "\nSUCCESS: Database connection restored!"
                     else:
-                        reward -= 0.1
+                        add_reward(-0.1, "unsafe_change_without_triage")
                         output += (
                             "\nWARNING: Change applied without incident triage. "
                             "Inspect API logs and resolve DB IP via query_metadata before closing the incident."
                         )
                 elif rule_action == "deny":
-                    reward -= 0.1
+                    add_reward(-0.1, "deny_rule_during_incident")
                     output += "\nWARNING: Deny rule applied during outage remediation."
 
             elif action.command == "restart_service":
@@ -399,17 +443,18 @@ class CloudDevopsEnvironment(Environment):
                                 "logs"
                             ] = "INFO: Restart successful. Memory cleared."
                             state.is_resolved = True
-                            reward += 0.8
+                            add_reward(0.8, "resolve_hard_upstream_recovery")
                             done = True
+                            termination_reason = "resolved_hard"
                             output += "\nSUCCESS: OutOfMemory loop broken. System stable."
                         else:
-                            reward -= 0.1
+                            add_reward(-0.1, "restart_without_root_cause")
                             output += (
                                 "\nWARNING: Restart denied by change policy. "
                                 "Find failing upstream IP from lb-main, resolve it with query_metadata, and inspect i-web2 first."
                             )
                     elif action.resource_id == "i-web1":
-                        reward -= 0.2
+                        add_reward(-0.2, "restart_healthy_node")
                         output += (
                             "\nWARNING: You restarted a healthy production server! "
                             "Users dropped."
@@ -418,18 +463,20 @@ class CloudDevopsEnvironment(Environment):
             elif action.command == "submit_solution":
                 if state.is_resolved:
                     done = True
+                    termination_reason = "resolved_submit_solution"
                     output = "Solution verified. System is HEALTHY."
                 else:
                     if self.task_name == "hard":
                         # In hard mode, unresolved submission should not abort the run.
                         done = False
-                        reward -= 0.1
+                        add_reward(-0.1, "premature_submit_hard")
                         output = (
                             "Solution incorrect. Incident is still CRITICAL. "
                             "Continue triage and remediation before submitting."
                         )
                     else:
                         done = True
+                        termination_reason = "incorrect_submit"
                         output = "Solution incorrect. System is still CRITICAL."
 
             else:
@@ -440,16 +487,26 @@ class CloudDevopsEnvironment(Environment):
             output = f"Command Failed: {error}"
 
         cascade_penalty, cascade_msg = self._apply_cascading_failure()
-        reward += cascade_penalty
+        add_reward(cascade_penalty, "cascading_failure_penalty")
         if cascade_msg:
             output = f"{output}{cascade_msg}" if output else cascade_msg.strip()
 
         if state.step_count >= self.MAX_STEPS and not done:
             done = True
+            termination_reason = "max_steps_timeout"
             timeout_suffix = "\nTIMEOUT: Max steps reached."
             output = f"{output}{timeout_suffix}" if output else timeout_suffix.strip()
 
+        raw_reward = reward
         reward = max(-1.0, min(1.0, reward))
+        if reward != raw_reward:
+            reward_breakdown.append(
+                {
+                    "event": "reward_clip",
+                    "delta": round(float(reward - raw_reward), 4),
+                }
+            )
+
         lb_external = state.resources.get("lb-external", {})
         if state.is_resolved:
             status = "HEALTHY"
@@ -464,6 +521,11 @@ class CloudDevopsEnvironment(Environment):
             "achievements": sorted(self._achievements),
             "total_resources": len(state.resources),
             "action_cost": self.ACTION_COST,
+            "objective": self._task_objective(),
+            "deterministic": True,
+            "max_steps": self.MAX_STEPS,
+            "termination_reason": termination_reason if done else "in_progress",
+            "reward_breakdown": reward_breakdown,
         }
 
         return CloudObservation(

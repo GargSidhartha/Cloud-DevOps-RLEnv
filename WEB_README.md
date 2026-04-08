@@ -1,172 +1,99 @@
-# Cloud DevOps RLEnv Web Playbook
+# Cloud DevOps RLEnv
 
-Use this page as your operator guide when stepping through incidents in /web.
+Use this page as the operator playbook in the /web interface.
 
-## Mission
-
-You are the on-call SRE for a production outage.
-
-Your loop is always:
+## Core Loop
 
 1. Triage quickly.
-2. Confirm root cause.
-3. Apply the minimum safe fix.
-4. Verify health and close.
+2. Build evidence from logs and metadata.
+3. Apply the minimum safe remediation.
+4. Verify resolution and stop.
 
-## What Makes This Environment Non-Trivial
+Why this matters: each action has a cost (`-0.01`), so shorter correct trajectories score higher.
 
-- Large decoy inventory: many resources are intentionally irrelevant.
-- Ambiguous telemetry: medium/hard logs expose failing IPs, not only direct IDs.
-- Action cost: every step incurs a small penalty, so efficient plans outperform exploratory spam.
-- Hard-mode drift: delayed remediation causes additional system degradation.
+## Command Cheat Sheet
 
-## Command Reference
+- `list_resources`
+: Start here to map real targets vs decoys.
 
-### list_resources
+- `describe_resource(resource_id)`
+: Inspect config/state details.
 
-- Purpose: enumerate all available entities.
-- Use first in most runs.
-- Required fields: command only.
+- `view_logs(resource_id)`
+: Primary source of root-cause evidence.
 
-### describe_resource
+- `query_metadata(parameters={"ip_address": "..."})`
+: Resolve IP-only clues to resource IDs (mandatory multi-hop step in medium/hard).
 
-- Purpose: inspect one resource configuration or current state.
-- Required fields: resource_id.
+- `update_security_group(resource_id, parameters)`
+: Requires `parameters.port` and `parameters.action` where action is `allow` or `deny`.
 
-### view_logs
+- `restart_service(resource_id)`
+: Use only after causal evidence confirms target.
 
-- Purpose: read operational telemetry for one resource.
-- Required fields: resource_id.
-
-### query_metadata
-
-- Purpose: resolve metadata such as ip_address -> resource_id.
-- Required fields: parameters.ip_address.
-- Typical medium/hard bridge action before mutation.
-
-### update_security_group
-
-- Purpose: mutate network policy.
-- Required fields: resource_id, parameters.port, parameters.action.
-- Valid action values: allow, deny.
-
-### restart_service
-
-- Purpose: restart a target service/instance.
-- Required fields: resource_id.
-- Use only after root-cause confirmation.
-
-### submit_solution
-
-- Purpose: attempt to close incident.
-- Hard mode may continue with penalty if unresolved.
-
-## JSON Action Examples
-
-```json
-{"command":"list_resources"}
-```
-
-```json
-{"command":"view_logs","resource_id":"i-api"}
-```
-
-```json
-{"command":"query_metadata","parameters":{"ip_address":"10.0.4.5"}}
-```
-
-```json
-{"command":"update_security_group","resource_id":"sg-db","parameters":{"port":5432,"action":"allow"}}
-```
-
-```json
-{"command":"restart_service","resource_id":"i-web2"}
-```
+- `submit_solution`
+: Useful for explicit closure checks; unresolved hard submissions are penalized and continue.
 
 ## Task Playbooks
 
-### Easy: Web Access Recovery
+### Easy
 
 Objective:
-
-- Open port 80 on sg-web.
+- Restore web access by allowing port `80` on `sg-web`.
 
 Strong path:
+1. `list_resources`
+2. `update_security_group("sg-web", {"port": 80, "action": "allow"})`
 
-1. list_resources
-2. update_security_group(sg-web, port=80, action=allow)
+Typical outcome:
+- 2 steps, score around `0.78`
 
-Optional safer path (slightly lower efficiency):
-
-1. list_resources
-2. describe_resource(sg-web)
-3. update_security_group(sg-web, port=80, action=allow)
-
-### Medium: API to DB Connectivity
+### Medium
 
 Objective:
-
-- Restore DB access by opening 5432 on sg-db, but only after diagnosis.
+- Restore API to DB connectivity by allowing port `5432` on `sg-db`.
 
 Strong path:
-
-1. list_resources
-2. view_logs(i-api)
-3. query_metadata(ip_address=10.0.4.5)
-4. update_security_group(sg-db, port=5432, action=allow)
+1. `list_resources`
+2. `view_logs("i-api")`
+3. `query_metadata({"ip_address": "10.0.4.5"})`
+4. `update_security_group("sg-db", {"port": 5432, "action": "allow"})`
 
 Guardrail:
+- Applying SG changes before logs + metadata lookup is penalized and does not resolve the incident.
 
-- Mutating sg-db before logs + metadata lookup is penalized and does not resolve.
-
-### Hard: Upstream Failure Under Drift
+### Hard
 
 Objective:
-
-- Find failing upstream from lb-main logs, resolve target identity, inspect, then restart i-web2.
+- Recover checkout flow by identifying the failing upstream and restarting `i-web2` safely.
 
 Strong path:
-
-1. list_resources
-2. view_logs(lb-main)
-3. query_metadata(ip_address=10.0.8.22)
-4. describe_resource(i-web2) or view_logs(i-web2)
-5. restart_service(i-web2)
+1. `list_resources`
+2. `view_logs("lb-main")`
+3. `query_metadata({"ip_address": "10.0.8.22"})`
+4. `describe_resource("i-web2")` or `view_logs("i-web2")`
+5. `restart_service("i-web2")`
 
 Guardrails:
+- Restarting `i-web1` is penalized.
+- Restarting `i-web2` without investigation is penalized.
+- If unresolved after step 8, `lb-external` also fails (cascading failure).
 
-- Restarting i-web1 is penalized.
-- Restarting i-web2 before investigation is penalized and blocked from resolution.
-- If unresolved after step 8, lb-external also fails (cascading failure).
+## Reading Metadata
 
-## Rewards, Termination, And Score Semantics
+Watch these response fields each step:
 
-- Every action includes a small cost.
-- Discovery and correct remediation provide shaped positive rewards.
-- Unsafe or premature actions apply penalties.
-- Episode terminates on resolution or max step limit.
-- Submission score is clamped to a strict open interval (0,1).
-- success reflects actual incident resolution state.
-
-## Observation Fields To Monitor
-
-- output: command result text
-- error: command-level error string
-- system_health_status: CRITICAL, DEGRADED, HEALTHY
-- reward: step reward
-- done: episode termination flag
-- metadata: task, step_count, resolved, achievements, action_cost
+- `system_health_status`: `CRITICAL` / `DEGRADED` / `HEALTHY`
+- `done`: episode ended or still running
+- `reward`: immediate signal after action cost and shaping
+- `metadata.resolved`: authoritative success flag
+- `metadata.termination_reason`: why episode ended
+- `metadata.reward_breakdown`: transparent reward events for grader/debug inspection
 
 ## Submission Contract Reminder
 
-inference.py must:
+`inference.py` must:
 
 - use OpenAI client
-- read API_BASE_URL, MODEL_NAME, HF_TOKEN
-- emit strict stdout lines with START, STEP, END markers
-
-Practical strategy:
-
-- Inspect first, mutate second.
-- Use query_metadata whenever logs give only IP clues.
-- Prefer minimal actions for higher score.
+- read `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN`
+- emit strict stdout markers: `[START]`, `[STEP]`, `[END]`
