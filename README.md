@@ -25,6 +25,16 @@ Real incidents are multi-step and noisy. Good agents must:
 
 Cloud DevOps RLEnv simulates that behavior with realistic failure patterns, decoy resources, shaped rewards, and anti-shortcut guardrails.
 
+## Why It's Hard
+
+This benchmark is intentionally designed to resist brute-force policies and reward disciplined SRE reasoning:
+
+- Needle-in-a-haystack discovery: 20+ decoy compute nodes and 20+ decoy security groups increase search complexity.
+- Ambiguous telemetry: noisy, raw operational logs surface symptoms (including IP-only clues) rather than direct root-cause labels.
+- Action-penalty heuristics: every action has a small negative cost, so efficient remediation beats command spamming.
+- Multi-hop dependency resolution: agents must map IP addresses to resource IDs via metadata lookup before applying fixes.
+- System drift under pressure: in hard mode, delayed remediation triggers cascading failures that worsen observability and reward dynamics.
+
 ## Environment Scope
 
 - Domain: Cloud SRE / DevOps incident response
@@ -55,7 +65,7 @@ Model: CloudAction
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| command | enum | yes | One of: list_resources, describe_resource, view_logs, update_security_group, restart_service, submit_solution |
+| command | enum | yes | One of: list_resources, describe_resource, view_logs, query_metadata, update_security_group, restart_service, submit_solution |
 | resource_id | string | conditional | Required for most actions except list_resources |
 | parameters | object | conditional | Used by mutating actions (for example, security-group updates) |
 
@@ -63,6 +73,7 @@ Action semantics:
 - list_resources: Enumerates available resources including decoys.
 - describe_resource: Returns structured details for one resource.
 - view_logs: Returns logs for one resource.
+- query_metadata: Resolves infrastructure metadata (for example, IP address to resource ID).
 - update_security_group: Appends a rule (requires parameters.port).
 - restart_service: Restarts one instance/service by ID.
 - submit_solution: Declares the episode solved (or not solved).
@@ -95,6 +106,7 @@ Reward shaping is sparse-but-guided:
 - discovery rewards for correct investigative steps
 - larger terminal rewards for correct remediation
 - penalties for unsafe or premature operations
+- fixed action cost per step (efficiency pressure)
 - timeout terminal condition after max steps
 
 Per-step reward is clipped to [-1.0, 1.0].
@@ -116,8 +128,8 @@ Typical successful sequence:
 3. update_security_group(sg-web, port=80, action=allow) (+0.8, done)
 
 Expected score:
-- 1.0 for full playbook
-- 0.8 if agent skips the optional read step
+- ~0.97 for full playbook with efficient triage
+- ~0.79 if agent skips the optional read step
 
 ### Medium Task
 
@@ -134,33 +146,35 @@ Typical successful sequence:
 4. update_security_group(sg-db, port=5432, action=allow) (+0.6, done if logs were inspected)
 
 Guardrail:
-- Applying the SG change before log triage gives a penalty (-0.1) and does not close the incident.
+- Applying the SG change before log triage + metadata lookup gives a penalty (-0.1) and does not close the incident.
 
 Expected score:
-- 1.0 with full investigative path
-- 0.8 if SG describe step is skipped but log triage is done
+- ~0.97 with full investigative path (logs -> metadata lookup -> remediation)
+- below ~0.90 when metadata dependency is skipped
 
 ### Hard Task
 
 Incident:
-- Checkout path degraded due to upstream timeout to i-web2.
+- Checkout path degraded due to upstream timeout to an IP-only target that must be resolved first.
 
 Objective:
-- Trace LB errors to the correct target and restart i-web2 only after diagnosis.
+- Trace LB errors to the correct target, resolve resource identity via metadata, and restart i-web2 only after diagnosis.
 
 Typical successful sequence:
 1. list_resources
-2. view_logs(lb-main) to identify failing upstream i-web2 (+0.2)
-3. describe_resource(i-web2) or view_logs(i-web2) (+0.2)
-4. restart_service(i-web2) (+0.8, done when both investigation achievements exist)
+2. view_logs(lb-main) to identify failing upstream IP (+0.2)
+3. query_metadata(ip_address=<failing_ip>) to resolve target ID (+0.2)
+4. describe_resource(i-web2) or view_logs(i-web2) (+0.2)
+5. restart_service(i-web2) (+0.8, done when all investigation achievements exist)
 
 Guardrails:
 - Restarting i-web2 before investigation: penalty (-0.1), no resolution.
 - Restarting healthy i-web1: penalty (-0.2).
 - Premature submit_solution in hard mode: penalty (-0.1), episode continues.
+- If unresolved after step 8 in hard mode, lb-external also fails (cascading failure), increasing pressure and noise.
 
 Expected score:
-- 1.0 after score clamping for the full correct path
+- near 1.0 after score clamping for strong trajectories (can exceed 1.0 raw before clamp)
 
 ## API Endpoints
 

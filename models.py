@@ -24,6 +24,7 @@ class CloudAction(Action):
         "list_resources",
         "describe_resource",
         "view_logs",
+        "query_metadata",
         "update_security_group",
         "restart_service",
         "submit_solution",
@@ -32,14 +33,15 @@ class CloudAction(Action):
         default=None,
         description=(
             "The ID of the target resource (e.g., 'i-12345'). "
-            "Required for all commands except list_resources."
+            "Required for most commands except list_resources and query_metadata."
         ),
     )
     parameters: Optional[Dict[str, Any]] = Field(
         default=None,
         description=(
             "Key-value pairs for updates "
-            "(e.g., {'port': '80', 'action': 'allow'} for update_security_group)."
+            "(e.g., {'port': '80', 'action': 'allow'} for update_security_group, "
+            "or {'ip_address': '10.0.4.5'} for query_metadata)."
         ),
     )
     message: Optional[str] = Field(

@@ -50,6 +50,7 @@ class CloudDevopsEnvironment(Environment):
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
     MAX_STEPS: int = 20
     VALID_TASKS = {"easy", "medium", "hard"}
+    ACTION_COST: float = 0.01
 
     def __init__(self, task_name: str = "easy"):
         """Initialize the cloud_devops_env environment."""
@@ -100,19 +101,28 @@ class CloudDevopsEnvironment(Environment):
                 {
                 "i-api": {
                     "type": "Instance",
+                    "ip_address": "10.0.4.11",
                     "status": "running",
                     "logs": (
                         "[2026-04-06 17:01:22] [CRITICAL] "
                         "sqlalchemy.exc.OperationalError: "
                         "(psycopg2.OperationalError) connection to server at "
-                        "'10.0.4.5' (i-db), port 5432 failed: Connection timed out. "
+                        "'10.0.4.5', port 5432 failed: Connection timed out. "
                         "Is the server running and accepting TCP/IP connections?"
                     ),
                 },
-                "i-db": {"type": "Instance", "status": "running"},
+                "i-db": {
+                    "type": "Instance",
+                    "ip_address": "10.0.4.5",
+                    "status": "running",
+                },
                 "sg-db": {
                     "type": "SecurityGroup",
                     "rules": [{"port": 22, "action": "allow"}],
+                },
+                "metadata-svc": {
+                    "type": "MetadataService",
+                    "status": "running",
                 },
                 }
             )
@@ -126,13 +136,19 @@ class CloudDevopsEnvironment(Environment):
                     "2026/04/06 17:02:09 [error] 3197#3197: *4189 upstream timed out "
                     "(110: Connection timed out) while reading response header from upstream, "
                     "client: 10.0.2.14, server: api.prod.local, request: \"GET /checkout HTTP/1.1\", "
-                    "upstream: \"http://i-web2:8080/checkout\", host: \"api.prod.local\"\n"
+                    "upstream: \"http://10.0.8.22:8080/checkout\", host: \"api.prod.local\"\n"
                     "2026/04/06 17:02:10 [error] 3197#3197: *4190 no live upstreams while "
-                    "connecting to upstream \"i-web2\""
+                    "connecting to upstream \"10.0.8.22\""
                 ),
+            },
+            "lb-external": {
+                "type": "LoadBalancer",
+                "status": "running",
+                "logs": "INFO: Edge traffic stable.",
             },
             "i-web1": {
                 "type": "Instance",
+                "ip_address": "10.0.8.21",
                 "status": "running",
                 "logs": (
                     "[2026-04-06 17:02:11] INFO web-service: readiness probe passed\n"
@@ -141,6 +157,7 @@ class CloudDevopsEnvironment(Environment):
             },
             "i-web2": {
                 "type": "Instance",
+                "ip_address": "10.0.8.22",
                 "status": "degraded",
                 "logs": (
                     "kernel: Out of memory: Killed process 12345 (java) total-vm:4194304kB, "
@@ -153,9 +170,46 @@ class CloudDevopsEnvironment(Environment):
                 "type": "SecurityGroup",
                 "rules": [{"port": 80, "action": "allow"}],
             },
+            "metadata-svc": {
+                "type": "MetadataService",
+                "status": "running",
+            },
             }
         )
         return resources
+
+    def _lookup_resource_by_ip(self, ip_address: str) -> str | None:
+        if self._state_data is None:
+            return None
+        for resource_id, data in self._state_data.resources.items():
+            if data.get("ip_address") == ip_address:
+                return resource_id
+        return None
+
+    def _apply_cascading_failure(self) -> tuple[float, str]:
+        """Simulate system drift in hard mode if root cause is not fixed quickly."""
+        if self._state_data is None or self.task_name != "hard":
+            return 0.0, ""
+
+        state = self._state_data
+        if state.is_resolved or state.step_count <= 8:
+            return 0.0, ""
+
+        lb = state.resources.get("lb-external")
+        if not lb:
+            return 0.0, ""
+
+        if lb.get("status") != "DOWN":
+            lb["status"] = "DOWN"
+            lb["logs"] = (
+                "CRITICAL: Cascading failure triggered after prolonged unresolved OOM incident. "
+                "Edge load balancer stopped serving traffic."
+            )
+            return -0.05, (
+                "\nALERT: Cascading failure detected. lb-external is DOWN due to delayed remediation."
+            )
+
+        return -0.03, ""
 
     def _reward_once(self, achievement: str, points: float) -> float:
         if achievement in self._achievements:
@@ -202,7 +256,7 @@ class CloudDevopsEnvironment(Environment):
         state = self._state_data
 
         state.step_count += 1
-        reward = 0.0
+        reward = -self.ACTION_COST
         done = False
         output = ""
         error = None
@@ -245,6 +299,25 @@ class CloudDevopsEnvironment(Environment):
                 elif self.task_name == "hard" and action.resource_id == "i-web2":
                     reward += self._reward_once("inspect_target", 0.2)
 
+            elif action.command == "query_metadata":
+                ip_address = None
+                if action.parameters and isinstance(action.parameters, dict):
+                    ip_address = action.parameters.get("ip_address")
+                if not ip_address and action.resource_id:
+                    ip_address = action.resource_id
+                if not ip_address:
+                    raise ValueError("query_metadata requires parameters.ip_address.")
+
+                resource_id = self._lookup_resource_by_ip(str(ip_address))
+                if not resource_id:
+                    raise ValueError(f"No resource found for ip_address={ip_address}")
+
+                output = f"Metadata lookup: ip_address={ip_address} resource_id={resource_id}"
+                if self.task_name == "medium" and str(ip_address) == "10.0.4.5":
+                    reward += self._reward_once("lookup_db_target", 0.2)
+                elif self.task_name == "hard" and str(ip_address) == "10.0.8.22":
+                    reward += self._reward_once("lookup_upstream_target", 0.2)
+
             elif action.command == "update_security_group":
                 if not action.resource_id:
                     raise ValueError("resource_id is required for update_security_group.")
@@ -277,7 +350,11 @@ class CloudDevopsEnvironment(Environment):
                     and action.resource_id == "sg-db"
                     and port == 5432
                 ):
-                    if "read_logs" in self._achievements:
+                    investigated = (
+                        "read_logs" in self._achievements
+                        and "lookup_db_target" in self._achievements
+                    )
+                    if investigated:
                         state.is_resolved = True
                         reward += 0.6
                         done = True
@@ -286,7 +363,7 @@ class CloudDevopsEnvironment(Environment):
                         reward -= 0.1
                         output += (
                             "\nWARNING: Change applied without incident triage. "
-                            "Inspect API logs before closing the incident."
+                            "Inspect API logs and resolve DB IP via query_metadata before closing the incident."
                         )
 
             elif action.command == "restart_service":
@@ -302,6 +379,7 @@ class CloudDevopsEnvironment(Environment):
                         investigated_root_cause = (
                             "inspect_lb" in self._achievements
                             and "inspect_target" in self._achievements
+                            and "lookup_upstream_target" in self._achievements
                         )
                         if investigated_root_cause:
                             state.resources["i-web2"]["status"] = "running"
@@ -316,7 +394,7 @@ class CloudDevopsEnvironment(Environment):
                             reward -= 0.1
                             output += (
                                 "\nWARNING: Restart denied by change policy. "
-                                "Find failing upstream from lb-main and inspect i-web2 first."
+                                "Find failing upstream IP from lb-main, resolve it with query_metadata, and inspect i-web2 first."
                             )
                     elif action.resource_id == "i-web1":
                         reward -= 0.2
@@ -349,19 +427,31 @@ class CloudDevopsEnvironment(Environment):
             error = str(exc)
             output = f"Command Failed: {error}"
 
+        cascade_penalty, cascade_msg = self._apply_cascading_failure()
+        reward += cascade_penalty
+        if cascade_msg:
+            output = f"{output}{cascade_msg}" if output else cascade_msg.strip()
+
         if state.step_count >= self.MAX_STEPS and not done:
             done = True
             timeout_suffix = "\nTIMEOUT: Max steps reached."
             output = f"{output}{timeout_suffix}" if output else timeout_suffix.strip()
 
         reward = max(-1.0, min(1.0, reward))
-        status = "HEALTHY" if state.is_resolved else "CRITICAL"
+        lb_external = state.resources.get("lb-external", {})
+        if state.is_resolved:
+            status = "HEALTHY"
+        elif self.task_name == "hard" and lb_external.get("status") == "DOWN":
+            status = "DEGRADED"
+        else:
+            status = "CRITICAL"
         info = {
             "step_count": state.step_count,
             "resolved": state.is_resolved,
             "task": self.task_name,
             "achievements": sorted(self._achievements),
             "total_resources": len(state.resources),
+            "action_cost": self.ACTION_COST,
         }
 
         return CloudObservation(

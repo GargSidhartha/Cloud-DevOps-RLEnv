@@ -63,10 +63,11 @@ def get_model_action(
         "You are an expert AI DevOps Engineer diagnosing a cloud infrastructure issue. "
         "You must respond ONLY with a raw JSON object matching this schema:\n"
         "{\n"
-        '  "command": "list_resources" | "describe_resource" | "view_logs" | "update_security_group" | "restart_service" | "submit_solution",\n'
+        '  "command": "list_resources" | "describe_resource" | "view_logs" | "query_metadata" | "update_security_group" | "restart_service" | "submit_solution",\n'
         '  "resource_id": "string (optional)",\n'
         '  "parameters": {"key": "value"} (optional)\n'
         "}\n"
+        "When logs provide only IP addresses, use query_metadata with parameters.ip_address to resolve the resource_id before remediation.\n"
         "Do not include markdown blocks like ```json. Just output the JSON."
     )
 
