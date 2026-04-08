@@ -74,7 +74,7 @@ Action semantics:
 - describe_resource: Returns structured details for one resource.
 - view_logs: Returns logs for one resource.
 - query_metadata: Resolves infrastructure metadata (for example, IP address to resource ID).
-- update_security_group: Appends a rule (requires parameters.port).
+- update_security_group: Appends a rule (requires parameters.port and parameters.action where action is allow/deny).
 - restart_service: Restarts one instance/service by ID.
 - submit_solution: Declares the episode solved (or not solved).
 

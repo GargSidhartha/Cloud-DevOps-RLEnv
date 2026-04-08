@@ -327,19 +327,27 @@ class CloudDevopsEnvironment(Environment):
                     raise ValueError(f"Invalid Security Group ID: {action.resource_id}")
                 if not action.parameters or "port" not in action.parameters:
                     raise ValueError("Missing 'port' in parameters.")
+                if "action" not in action.parameters:
+                    raise ValueError("Missing 'action' in parameters. Use 'allow' or 'deny'.")
 
                 rule = copy.deepcopy(action.parameters)
                 rules = res.get("rules")
                 if not isinstance(rules, list):
                     raise ValueError(f"Security group {action.resource_id} has invalid rules.")
+                port = int(rule["port"])
+                rule_action = str(rule.get("action", "")).lower()
+                if rule_action not in {"allow", "deny"}:
+                    raise ValueError(
+                        "Invalid security-group action. Supported values: 'allow', 'deny'."
+                    )
+
                 rules.append(rule)
                 output = f"Successfully updated {action.resource_id} with rule: {rule}"
-
-                port = int(rule["port"])
                 if (
                     self.task_name == "easy"
                     and action.resource_id == "sg-web"
                     and port == 80
+                    and rule_action == "allow"
                 ):
                     state.is_resolved = True
                     reward += 0.8
@@ -349,6 +357,7 @@ class CloudDevopsEnvironment(Environment):
                     self.task_name == "medium"
                     and action.resource_id == "sg-db"
                     and port == 5432
+                    and rule_action == "allow"
                 ):
                     investigated = (
                         "read_logs" in self._achievements
@@ -365,6 +374,9 @@ class CloudDevopsEnvironment(Environment):
                             "\nWARNING: Change applied without incident triage. "
                             "Inspect API logs and resolve DB IP via query_metadata before closing the incident."
                         )
+                elif rule_action == "deny":
+                    reward -= 0.1
+                    output += "\nWARNING: Deny rule applied during outage remediation."
 
             elif action.command == "restart_service":
                 if not action.resource_id:

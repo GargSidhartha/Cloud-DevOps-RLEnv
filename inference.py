@@ -19,7 +19,6 @@ MAX_STEPS = 15
 MAX_TOTAL_REWARD = 1.0
 SCORE_MIN = 0.001
 SCORE_MAX = 0.999
-SUCCESS_SCORE_THRESHOLD = 0.8
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -74,8 +73,8 @@ def get_model_action(
         "- query_metadata: parameters must include ip_address\n"
         "- list_resources / describe_resource / view_logs / restart_service / submit_solution: parameters should be omitted\n"
         "Task playbooks:\n"
-        "- easy: identify sg-web and open port 80 using update_security_group\n"
-        "- medium: inspect i-api logs, resolve DB IP using query_metadata, then update sg-db port 5432\n"
+        "- easy: identify sg-web and open port 80 using update_security_group with action=allow\n"
+        "- medium: inspect i-api logs, resolve DB IP using query_metadata, then update sg-db port 5432 with action=allow\n"
         "- hard: inspect lb-main logs, resolve failing upstream IP via query_metadata, inspect i-web2, then restart i-web2\n"
         "When logs provide only IP addresses, use query_metadata with parameters.ip_address to resolve the resource_id before remediation.\n"
         "Do not include markdown blocks like ```json. Just output the JSON."
@@ -167,7 +166,7 @@ async def run_task(task_name: str, client: OpenAI) -> None:
         score = sum(rewards)
         # Keep score strictly in (0,1) after formatting to avoid validator endpoint failures.
         score = max(SCORE_MIN, min(score, SCORE_MAX))
-        success = score >= SUCCESS_SCORE_THRESHOLD
+        success = bool(result.info.get("resolved", False))
 
     finally:
         try:
