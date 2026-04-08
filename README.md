@@ -98,7 +98,7 @@ Reward shaping is sparse-but-guided:
 - timeout terminal condition after max steps
 
 Per-step reward is clipped to [-1.0, 1.0].
-Inference score is cumulative episode reward clamped to [0.0, 1.0].
+Inference task score is adjusted to remain strictly within (0.0, 1.0) for Phase-2 validator compatibility.
 
 ## Detailed Task Playbooks
 

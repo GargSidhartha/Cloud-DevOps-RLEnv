@@ -43,6 +43,7 @@ Your goal is to:
 - Positive rewards are given for meaningful diagnosis + correct fixes.
 - Penalties are applied for premature or unsafe actions.
 - Step reward is clipped to `[-1.0, 1.0]`.
+- Final task score is kept strictly inside `(0.0, 1.0)` for submission validator compatibility.
 - Episode ends on success or timeout (`MAX_STEPS = 20`).
 
 ## Task Playbooks

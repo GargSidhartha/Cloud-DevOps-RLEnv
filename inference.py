@@ -16,6 +16,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 BENCHMARK = "CloudDevOpsEnv"
 MAX_STEPS = 15
 MAX_TOTAL_REWARD = 1.0
+SCORE_EPSILON = 1e-6
 SUCCESS_SCORE_THRESHOLD = 0.8
 
 
@@ -140,7 +141,8 @@ async def run_task(task_name: str, client: OpenAI) -> None:
                 break
 
         score = sum(rewards)
-        score = min(max(score, 0.0), MAX_TOTAL_REWARD)
+        # Phase-2 validator expects each task score to be strictly within (0, 1).
+        score = max(SCORE_EPSILON, min(score, MAX_TOTAL_REWARD - SCORE_EPSILON))
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     finally:
