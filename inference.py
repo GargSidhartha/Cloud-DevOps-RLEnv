@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 from typing import Any, Dict, List, Tuple
 
 from openai import OpenAI
@@ -11,35 +12,43 @@ from models import CloudAction
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "google/gemma-4-31B-it")
-HF_TOKEN = os.getenv("HF_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 BENCHMARK = "CloudDevOpsEnv"
 MAX_STEPS = 15
 MAX_TOTAL_REWARD = 1.0
-SCORE_EPSILON = 1e-6
+SCORE_MIN = 0.001
+SCORE_MAX = 0.999
 SUCCESS_SCORE_THRESHOLD = 0.8
 
 
 def log_start(task: str, env: str, model: str) -> None:
-    log_data = {"task": task, "env": env, "model": model}
-    print(f"[START] {json.dumps(log_data)}", flush=True)
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
 def log_step(step: int, action: Any, reward: float, done: bool, error: Any) -> None:
     action_dict = action.model_dump() if hasattr(action, "model_dump") else str(action)
-    log_data = {
-        "step": step,
-        "action": action_dict,
-        "reward": reward,
-        "done": done,
-        "error": error,
-    }
-    print(f"[STEP] {json.dumps(log_data)}", flush=True)
+    if isinstance(action_dict, dict):
+        action_str = json.dumps(action_dict, separators=(",", ":"))
+    else:
+        action_str = str(action_dict)
+    action_str = action_str.replace("\n", " ").replace("\r", " ")
+
+    error_str = "null" if not error else str(error).replace("\n", " ").replace("\r", " ")
+    done_str = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action_str} reward={reward:.2f} done={done_str} error={error_str}",
+        flush=True,
+    )
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    log_data = {"success": success, "steps": steps, "score": score, "rewards": rewards}
-    print(f"[END] {json.dumps(log_data)}", flush=True)
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    success_str = str(success).lower()
+    print(
+        f"[END] success={success_str} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 def get_model_action(
@@ -85,10 +94,10 @@ def get_model_action(
         action_dict = json.loads(raw_text)
         return CloudAction(**action_dict), raw_text
     except (json.JSONDecodeError, ValidationError) as exc:
-        print(f"[DEBUG] Model parse failed: {exc}", flush=True)
+        print(f"[DEBUG] Model parse failed: {exc}", file=sys.stderr, flush=True)
         return CloudAction(command="list_resources"), "failed_parse"
     except Exception as exc:
-        print(f"[DEBUG] API request failed: {exc}", flush=True)
+        print(f"[DEBUG] API request failed: {exc}", file=sys.stderr, flush=True)
         return CloudAction(command="list_resources"), "api_error"
 
 
@@ -141,23 +150,30 @@ async def run_task(task_name: str, client: OpenAI) -> None:
                 break
 
         score = sum(rewards)
-        # Phase-2 validator expects each task score to be strictly within (0, 1).
-        score = max(SCORE_EPSILON, min(score, MAX_TOTAL_REWARD - SCORE_EPSILON))
+        # Keep score strictly in (0,1) after formatting to avoid validator endpoint failures.
+        score = max(SCORE_MIN, min(score, SCORE_MAX))
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     finally:
+        try:
+            await env.close()
+        except Exception as exc:
+            print(f"[DEBUG] env.close() failed: {exc}", file=sys.stderr, flush=True)
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
 async def main() -> None:
     if not HF_TOKEN:
-        print("[WARNING] HF_TOKEN environment variable not set. API calls will likely fail.")
+        print(
+            "[WARN] HF_TOKEN (or API_KEY fallback) is not set. API calls will fail in remote evaluation.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
     tasks = ["easy", "medium", "hard"]
     for task in tasks:
-        print(f"\n--- Running Task: {task.upper()} ---")
         await run_task(task, client)
 
 
