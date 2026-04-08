@@ -19,6 +19,7 @@ PYTHON_BIN=""
 OPENENV_BIN=""
 OPENENV_USE_MODULE=false
 DOCKER_CONTAINER_ID=""
+INFERENCE_OUT_FILE=".pre-submit-inference.out"
 
 usage() {
   cat <<'EOF'
@@ -74,6 +75,7 @@ cleanup() {
   if [ -n "$DOCKER_CONTAINER_ID" ]; then
     docker rm -f "$DOCKER_CONTAINER_ID" >/dev/null 2>&1 || true
   fi
+  rm -f "$INFERENCE_OUT_FILE" >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
@@ -297,8 +299,8 @@ log "Step 7/8: Baseline reproducibility (inference.py)"
 if [ "$SKIP_INFERENCE" = true ]; then
   log "SKIPPED -- --skip-inference enabled"
 else
-  run_with_timeout "$INFERENCE_TIMEOUT" "$PYTHON_BIN" inference.py >/tmp/pre-submit-inference.out 2>&1 || {
-    tail -n 80 /tmp/pre-submit-inference.out
+  run_with_timeout "$INFERENCE_TIMEOUT" "$PYTHON_BIN" inference.py >"$INFERENCE_OUT_FILE" 2>&1 || {
+    tail -n 80 "$INFERENCE_OUT_FILE"
     die "inference.py failed or timed out"
   }
   pass "inference.py completed within timeout"
@@ -308,12 +310,12 @@ log "Step 8/8: Structured logs + task/grader checks"
 if [ "$SKIP_INFERENCE" = true ]; then
   log "SKIPPED -- --skip-inference enabled"
 else
-  "$PYTHON_BIN" - <<'PY'
+  "$PYTHON_BIN" - "$INFERENCE_OUT_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path = Path('/tmp/pre-submit-inference.out')
+path = Path(sys.argv[1])
 text = path.read_text(encoding='utf-8', errors='replace').splitlines()
 
 starts = []
