@@ -12,7 +12,17 @@ from models import CloudAction
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "google/gemma-4-31B-it")
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+_RAW_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or ""
+HF_TOKEN = _RAW_TOKEN.strip().strip('"').strip("'")
+if HF_TOKEN == "":
+    HF_TOKEN = None
+
+FALLBACK_MODELS = [
+    "google/gemma-4-26B-A4B-it",
+    "google/gemma-3-27b-it",
+    "Qwen/Qwen2.5-72B-Instruct",
+    "Qwen/Qwen2.5-7B-Instruct",
+]
 
 BENCHMARK = "CloudDevOpsEnv"
 MAX_STEPS = 15
@@ -51,8 +61,42 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     )
 
 
+def resolve_model_name(client: OpenAI, requested_model: str) -> str:
+    """Pick a supported model for the active token/provider configuration."""
+    try:
+        models = client.models.list()
+        available = {
+            getattr(entry, "id", "")
+            for entry in getattr(models, "data", [])
+            if getattr(entry, "id", "")
+        }
+
+        if requested_model in available:
+            return requested_model
+
+        for candidate in FALLBACK_MODELS:
+            if candidate in available:
+                print(
+                    f"[WARN] MODEL_NAME '{requested_model}' is unavailable; falling back to '{candidate}'.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return candidate
+
+        print(
+            f"[WARN] MODEL_NAME '{requested_model}' not found in available models and no preferred fallback matched.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return requested_model
+    except Exception as exc:
+        print(f"[WARN] Could not list models for fallback resolution: {exc}", file=sys.stderr, flush=True)
+        return requested_model
+
+
 def get_model_action(
     client: OpenAI,
+    model_name: str,
     step: int,
     last_obs: str,
     last_error: str,
@@ -82,7 +126,7 @@ def get_model_action(
 
     try:
         response = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=model_name,
             messages=messages,
             temperature=0.1,
             max_tokens=200,
@@ -102,7 +146,7 @@ def get_model_action(
         return CloudAction(command="list_resources"), "api_error"
 
 
-async def run_task(task_name: str, client: OpenAI) -> None:
+async def run_task(task_name: str, client: OpenAI, model_name: str) -> None:
     env = CloudDevOpsEnv(task_name=task_name)
 
     history: List[Dict[str, str]] = []
@@ -111,7 +155,7 @@ async def run_task(task_name: str, client: OpenAI) -> None:
     score = 0.0
     success = False
 
-    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task=task_name, env=BENCHMARK, model=model_name)
 
     try:
         result = await env.reset()
@@ -123,7 +167,7 @@ async def run_task(task_name: str, client: OpenAI) -> None:
                 break
 
             action, raw_response = get_model_action(
-                client, step, last_obs, last_error, history
+                client, model_name, step, last_obs, last_error, history
             )
 
             result = await env.step(action)
@@ -170,12 +214,19 @@ async def main() -> None:
             file=sys.stderr,
             flush=True,
         )
+    elif len(HF_TOKEN) < 20:
+        print(
+            "[WARN] HF_TOKEN appears too short to be valid. Verify you exported the full token value.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    active_model = resolve_model_name(client, MODEL_NAME)
 
     tasks = ["easy", "medium", "hard"]
     for task in tasks:
-        await run_task(task, client)
+        await run_task(task, client, active_model)
 
 
 if __name__ == "__main__":

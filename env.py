@@ -65,3 +65,7 @@ class CloudDevOpsEnv:
         state = self._impl.state
         assert isinstance(state, CloudState)
         return state
+
+    async def close(self) -> None:
+        """Async close hook for evaluator compatibility."""
+        return None
